@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Feedback Agent Control Panel</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .status-box {
+            min-height: 100px; white-space: pre-wrap; overflow-y: auto;
+            font-family: monospace; font-size: 0.875rem; line-height: 1.25rem;
+        }
+        .status-idle { color: #4b5563; } /* gray-600 */
+        .status-running { color: #3b82f6; } /* blue-500 */
+        .status-success { color: #16a34a; } /* green-600 */
+        .status-error { color: #dc2626; } /* red-600 */
+    </style>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body class="bg-gray-100 min-h-screen flex items-center justify-center p-4">
+
+    <div class="bg-white p-8 rounded-lg shadow-lg w-full max-w-2xl">
+        <h1 class="text-2xl font-bold text-center text-gray-800 mb-8">Bluesky Feedback Agent Control Panel</h1>
+
+        <div class="mb-8 p-6 border border-gray-200 rounded-lg bg-gray-50">
+            <h2 class="text-xl font-semibold text-gray-700 mb-4">Stage 1: Analyze Feedback & Save Results</h2>
+            <p class="text-sm text-gray-600 mb-4">Trigger `main.py` on the backend to collect, process, analyze feedback, and save results to CSVs. (Can take several minutes)</p>
+            <button id="runAnalysisBtn" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg transition duration-300 ease-in-out focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50 disabled:opacity-50">
+                Run Data Analysis & Save CSVs
+            </button>
+            <div id="analysisStatus" class="mt-4 p-3 border border-gray-300 rounded-md bg-gray-100 status-box status-idle">
+                Status: Idle.
+            </div>
+        </div>
+
+        <div class="p-6 border border-gray-200 rounded-lg bg-gray-50">
+            <h2 class="text-xl font-semibold text-gray-700 mb-4">Stage 2: Generate Reports & Send Email</h2>
+            <p class="text-sm text-gray-600 mb-4">Trigger `run_report_graph.py` on the backend. Reads CSVs, generates PDF reports, and emails them.</p>
+            <div class="mb-4">
+                <label for="recipientEmail" class="block text-sm font-medium text-gray-700 mb-1">Recipient Email Address:</label>
+                <input type="email" id="recipientEmail" name="recipientEmail" class="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500" placeholder="enter.email@example.com" required>
+            </div>
+            <button id="runReportingBtn" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg transition duration-300 ease-in-out focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-opacity-50 disabled:opacity-50">
+                Generate Reports & Send Email
+            </button>
+            <div id="reportingStatus" class="mt-4 p-3 border border-gray-300 rounded-md bg-gray-100 status-box status-idle">
+                Status: Idle.
+            </div>
+        </div>
+
+         </div>
+
+    <script>
+        const analysisBtn = document.getElementById('runAnalysisBtn');
+        const analysisStatus = document.getElementById('analysisStatus');
+        const reportingBtn = document.getElementById('runReportingBtn');
+        const reportingStatus = document.getElementById('reportingStatus');
+        const recipientEmailInput = document.getElementById('recipientEmail');
+        // const checkStatusBtn = document.getElementById('checkStatusBtn'); // Removed
+
+        let analysisPollingInterval = null;
+        let reportingPollingInterval = null;
+        const POLLING_INTERVAL_MS = 3000; // Check status every 3 seconds
+
+        // Function to update status display
+        function updateStatus(element, message, statusClass) {
+            element.textContent = message;
+            element.className = 'mt-4 p-3 border border-gray-300 rounded-md bg-gray-100 status-box'; // Reset classes
+            element.classList.add(statusClass);
+        }
+
+        // Function to disable/enable buttons
+        function setButtonsDisabled(disabled) {
+            analysisBtn.disabled = disabled;
+            reportingBtn.disabled = disabled;
+            // checkStatusBtn.disabled = disabled; // Removed
+        }
+
+        // Function to check status from backend
+        async function checkBackendStatus() {
+            console.log("Polling backend status...");
+            try {
+                 const response = await fetch('/status');
+                 if (!response.ok) {
+                     throw new Error(`HTTP error! status: ${response.status}`);
+                 }
+                 const statusData = await response.json();
+
+                 // --- Update Analysis Status ---
+                 const analysisState = statusData.analysis || { status: 'unknown', message: 'Unknown state' };
+                 let analysisMsg = `Analysis Status: ${analysisState.status}\n${analysisState.message || ''}`;
+                 let analysisClass = "status-idle";
+                 if (analysisState.status === 'running') analysisClass = "status-running";
+                 else if (analysisState.status === 'completed') {
+                     analysisClass = "status-success";
+                     if (analysisPollingInterval) clearInterval(analysisPollingInterval); // Stop polling if completed
+                 } else if (analysisState.status === 'error') {
+                     analysisClass = "status-error";
+                      if (analysisPollingInterval) clearInterval(analysisPollingInterval); // Stop polling on error
+                 }
+                 updateStatus(analysisStatus, analysisMsg.trim(), analysisClass);
+
+
+                 // --- Update Reporting Status ---
+                 const reportingState = statusData.reporting || { status: 'unknown', message: 'Unknown state' };
+                 let reportingMsg = `Reporting Status: ${reportingState.status}\n${reportingState.message || ''}`;
+                 let reportingClass = "status-idle";
+                 if (reportingState.status === 'running') {
+                     reportingClass = "status-running";
+                     // Message already contains inferred stage from backend
+                 } else if (reportingState.status === 'completed') {
+                     reportingClass = "status-success";
+                     if (reportingPollingInterval) clearInterval(reportingPollingInterval); // Stop polling if completed
+                 } else if (reportingState.status === 'error') {
+                     reportingClass = "status-error";
+                     if (reportingPollingInterval) clearInterval(reportingPollingInterval); // Stop polling on error
+                 }
+                 updateStatus(reportingStatus, reportingMsg.trim(), reportingClass);
+
+                 // Re-enable buttons only if BOTH tasks are idle/completed/error
+                 if (!['running'].includes(analysisState.status) && !['running'].includes(reportingState.status)) {
+                    setButtonsDisabled(false);
+                 } else {
+                    setButtonsDisabled(true); // Keep disabled if either is running
+                 }
+
+
+             } catch (error) {
+                 console.error("Error fetching status:", error);
+                 const errorMsg = `Error fetching status: ${error.message}. Backend might be down.`;
+                 updateStatus(analysisStatus, errorMsg, "status-error");
+                 updateStatus(reportingStatus, "", "status-error");
+                 if (analysisPollingInterval) clearInterval(analysisPollingInterval); // Stop polling on fetch error
+                 if (reportingPollingInterval) clearInterval(reportingPollingInterval);
+                 setButtonsDisabled(false); // Re-enable buttons on fetch error
+             }
+        }
+
+
+        // --- Event Listeners ---
+        analysisBtn.addEventListener('click', async () => {
+            console.log("Triggering analysis script execution...");
+            setButtonsDisabled(true);
+            updateStatus(analysisStatus, "Requesting analysis start...", "status-running");
+            if (analysisPollingInterval) clearInterval(analysisPollingInterval); // Clear previous interval if any
+
+            try {
+                const response = await fetch('/run-analysis', { method: 'POST' });
+                const result = await response.json();
+
+                if (response.ok) {
+                    updateStatus(analysisStatus, `Analysis started successfully.\nPolling status...`, "status-running");
+                    // Start polling for analysis status
+                    analysisPollingInterval = setInterval(checkBackendStatus, POLLING_INTERVAL_MS);
+                    checkBackendStatus(); // Check immediately once
+                } else {
+                    updateStatus(analysisStatus, `Error starting analysis: ${response.status}\n${result.message || ''}`, "status-error");
+                    setButtonsDisabled(false); // Re-enable on immediate failure
+                }
+            } catch (error) {
+                console.error("Fetch error for /run-analysis:", error);
+                updateStatus(analysisStatus, `Error starting analysis: Network error.\n${error.message}`, "status-error");
+                setButtonsDisabled(false);
+            }
+        });
+
+        reportingBtn.addEventListener('click', async () => {
+            const email = recipientEmailInput.value.trim();
+            if (!email || !/^\S+@\S+\.\S+$/.test(email)) {
+                updateStatus(reportingStatus, "Error: Please enter a valid recipient email address.", "status-error");
+                return;
+            }
+
+            console.log(`Triggering reporting script execution for ${email}...`);
+            setButtonsDisabled(true);
+            updateStatus(reportingStatus, `Requesting report generation for ${email}...`, "status-running");
+            if (reportingPollingInterval) clearInterval(reportingPollingInterval); // Clear previous interval
+
+            try {
+                const response = await fetch('/run-reporting', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ recipient_email: email })
+                });
+                const result = await response.json();
+
+                if (response.ok) {
+                    updateStatus(reportingStatus, `Reporting started successfully for ${email}.\nPolling status...`, "status-running");
+                    // Start polling for reporting status
+                    reportingPollingInterval = setInterval(checkBackendStatus, POLLING_INTERVAL_MS);
+                    checkBackendStatus(); // Check immediately once
+                } else {
+                    updateStatus(reportingStatus, `Error starting reporting: ${response.status}\n${result.message || ''}`, "status-error");
+                    setButtonsDisabled(false);
+                }
+            } catch (error) {
+                console.error("Fetch error for /run-reporting:", error);
+                updateStatus(reportingStatus, `Error starting reporting: Network error.\n${error.message}`, "status-error");
+                setButtonsDisabled(false);
+            }
+        });
+
+        // Initial status check on page load (optional)
+        // window.addEventListener('load', checkBackendStatus);
+
+    </script>
+
+</body>
+</html>
