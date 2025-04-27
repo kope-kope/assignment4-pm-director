@@ -8,7 +8,6 @@ from atproto import Client as BskyClient
 from atproto import models as BskyModels # Use alias for clarity
 from openai import OpenAI
 # import pprint # No longer needed after removing pprint.pprint call
-from app_store_scraper import AppStore
 from google_play_scraper import reviews_all, Sort
 from langdetect import detect, LangDetectException
 # Imports for potential future Langchain use (kept commented if not used now)
